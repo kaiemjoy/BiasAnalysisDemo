@@ -1,0 +1,167 @@
+---
+title: "Quantitative Bias Analysis Demo"
+output: html_notebook
+author: K Aiemjoy
+---
+
+
+#Set up
+```{r}
+rm(list=ls())
+
+library(lme4)
+library(episensr)
+```
+
+
+#Generate a synthetic data set
+```{r}
+#set.seed(54321)
+
+OR <- 2.0
+beta <- log(OR)
+n <-10000
+
+   x <- rbinom(n, 1, .40)
+   xpr <- x*beta    
+   ypr <- exp(xpr) / (1 + exp(xpr))
+   y <- rbinom(n=n, size=1, prob=ypr)
+   id <- floor(runif(n, 1,5)) #community id variable (1-4)
+   
+   
+#create data frame
+   df <- data.frame(y=y,x=x, ypr=ypr, id=id)   
+```
+
+
+
+
+#Missclassification parameters
+```{r}
+   sens<- .8
+   lowerSn <- .7
+   upperSn <- .95
+   gamma1<- 1-sens
+   
+   spec<-.9
+   lowerSp <- .8
+   upperSp <- .99
+   gamma0<-1-spec
+
+```
+
+
+#GLM and mixed model ignoring missclassification
+```{r}
+   #glm model
+    glm <- glm( y~x,data=df,family="binomial")
+    
+    #summary(glm)
+
+
+    #OR   
+    exp(glm$coefficients[2])
+
+   
+   #mixed model
+   mixed <- glmer (y~x + (1| id), data=df, family=binomial("logit"))
+   #summary(mixed)
+```
+
+
+#EpiSens 2x2 method 
+
+Simple bias analysis (Boring!)
+```{r}
+
+    misclassification(df$y, df$x,
+                     type = "outcome",
+                     bias_parms = c(sens, sens, spec, spec))
+    
+```
+
+
+#Probabalistic bias analysis (A little cooler)
+```{r}
+
+#Logit-normal: (location, scale, lower bound shift, upper bound shift)
+
+scale <- .9 
+
+MissClass <- probsens(df$y, df$x,
+              type = "outcome",
+              reps = 10000,
+              seca.parms = list("logit-normal", c(sens, scale, lowerSn, upperSn)),
+              spca.parms = list("logit-normal", c(spec, scale, lowerSp, upperSp)))
+
+
+#Uniform distribution
+#MissClass <- probsens(df$y, df$x,
+#              type = "outcome",
+#              reps = 10000,
+#              seca.parms = list("uniform", c(lowerSn, upperSn)),
+#              spca.parms = list("uniform", c(lowerSp, upperSp)))
+
+
+
+#create data frame from simulation object
+MissClassDF <- bind_rows(MissClass$sim.df)
+
+
+#Plot Histogram for prior distributions
+ggplot(data=MissClassDF) +
+        geom_histogram(aes(y=..density.., x=seca), bins=25, alpha=.5, fill = "blue") +
+        geom_histogram(aes(y=..density.., x=spca), bins=25, alpha=.5, fill = "grey") +
+        theme_minimal() 
+
+
+#Sensitivity Scatter plot
+ggplot(MissClassDF, aes(x=seca, y=corr.OR)) +
+      geom_point(alpha=.2, size=.2)+
+      geom_smooth(color="dodgerblue3") +
+      theme_minimal() +
+      labs(y="Corrected OR", x="Sensitivity") +
+      geom_hline(yintercept = OR) 
+
+
+#Specifity Scatter plot
+ggplot(MissClassDF, aes(x=spca, y=corr.OR)) +
+      geom_point(alpha=.2, size=.2)+
+      geom_smooth(color="dodgerblue3") +
+      theme_minimal() +
+      labs(y="Corrected OR", x="Specificity") +
+      geom_hline(yintercept = OR) 
+
+```
+
+
+
+#Modified Link Function (Super cool!)
+J. Nuehaus, Biometria 1999 (in SAS)
+```{r}
+
+#custom link function   
+   missclass.link <- function() {
+     linkfun <- function(mu) log ( (mu-gamma0)/(1-gamma1-mu) )  
+     linkinv <- function(eta) (1- gamma1 - gamma0)/(1+exp(-eta)) + gamma0
+     mu.eta <- function(eta) ( (exp(-eta))*(1-gamma1 -gamma0) )/( 1 + exp(-eta) ^2)
+     valideta <- function(eta) TRUE
+     link <- "missclass_link"
+     structure(list(linkfun = linkfun, linkinv = linkinv, mu.eta = mu.eta, valideta = valideta, name=link),
+               class = "link-glm")
+   }
+
+
+#GLM with modified link
+glm2 <- glm(y~x,data=df,family="binomial"(link=missclass.link()))
+
+exp(glm2$coefficients[2])
+
+
+```
+
+
+
+
+
+
